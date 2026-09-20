@@ -1,0 +1,58 @@
+plugins {
+    id 'com.android.application'
+}
+
+def keystorePropsFile = rootProject.file('keystore.properties')
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystoreProps.load(new FileInputStream(keystorePropsFile))
+}
+
+android {
+    namespace 'io.tapmon'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'io.tapmon'
+        minSdk 28          // Android 9 (Pie)
+        targetSdk 36       // Android 16
+        versionCode 1
+        versionName '1.0.0'
+    }
+
+    signingConfigs {
+        release {
+            if (keystoreProps['storeFile']) {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // 外部ライブラリを使わないので削るものがない。難読化もしない。
+            minifyEnabled false
+            shrinkResources false
+            if (keystoreProps['storeFile']) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+// AndroidX も外部ライブラリも使わない。標準フレームワークだけで書く。
+// APK を小さく保つのと、起動時に読み込む dex を増やさないため。
+dependencies {
+}

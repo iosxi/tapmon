@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  必要最小限の構成。
+    ・accessibilityEventTypes を指定しない = 画面上のイベントを一切受け取らない
+    ・canRetrieveWindowContent="false"     = 画面の内容を読まない
+    ・canRequestFilterKeyEvents も指定しない = キーも横取りしない
+  tapmon がシステムに頼むのは performGlobalAction（戻る・ホーム等）を
+  実行させてもらうことだけで、これはどのアクセシビリティサービスにもある。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/a11y_desc"
+    android:notificationTimeout="0"
+    android:settingsActivity="io.tapmon.MainActivity"
+    android:summary="@string/a11y_summary" />

@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- package (namespace) は Gradle の namespace / tools/build.sh が与える -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      tapmon が要求する権限は VIBRATE ひとつだけ。保護レベルは normal で、
+      インストール時に自動で付き、許可を尋ねるダイアログも出ない。
+      できるのは振動だけで、そこから何かを読み取ることはできない。
+      設定の「タップに気づいたら振動する」を切れば一度も使わない。
+      振動が要らないなら、この一行を消して組み直せば権限ゼロになる。
+
+      要りそうで要らないもの:
+        ・加速度センサー  … 権限不要（200Hz を超えて読むときだけ
+                             HIGH_SAMPLING_RATE_SENSORS が要る。tapmon は 200Hz 止まり）
+        ・メディア操作    … AudioManager#dispatchMediaKeyEvent (権限不要)
+        ・ライト          … CameraManager#setTorchMode (CAMERA 権限は不要)
+        ・戻る/ホーム等   … アクセシビリティサービスの performGlobalAction
+        ・常駐            … アクセシビリティサービスはシステムが束縛して保つので、
+                             前面サービスも通知も自動起動の権限も要らない
+      インターネットも位置情報もストレージも通知も使わない。
+    -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!--
+      「アプリを起動」に割り当てるアプリを一覧して選ぶために要る宣言。
+      Android 11 以降、他のアプリは既定では見えない。ここで見える範囲を
+      「ホーム画面に並ぶアプリ (MAIN/LAUNCHER)」だけに絞っている。
+      QUERY_ALL_PACKAGES は要求しない。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <!-- 加速度センサーの無い端末には配らない (Play 以外で配る分には目安) -->
+    <uses-feature
+        android:name="android.hardware.sensor.accelerometer"
+        android:required="true" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="false"
+        android:theme="@style/TapmonTheme">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          背面タップを見張る本体。アクセシビリティサービスにしているのは
+          「戻る」「ホーム」などを他のアプリの上から実行できる唯一の道だから。
+          サービスが有効な間はシステムがプロセスを保つので、常駐のための
+          前面サービスも通知も要らない。
+        -->
+        <service
+            android:name=".TapmonService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service" />
+        </service>
+    </application>
+</manifest>

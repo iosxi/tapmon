@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">tapmon</string>
+
+    <string name="lead">背面を 2 回 / 3 回叩くと、決めておいた動作をします。加速度センサーだけで見分けるので、専用のハードウェアは要りません。</string>
+
+    <string name="a11y_desc">背面を叩いたことに気づいて、戻る・ホーム・再生停止などを実行します。画面の内容は読み取りません。</string>
+    <string name="a11y_summary">背面を 2 回 / 3 回叩いて操作する</string>
+
+    <string name="h_status">状態</string>
+    <string name="h_assign">割り当て</string>
+    <string name="h_sens">感度</string>
+    <string name="h_guard">誤作動を防ぐ</string>
+    <string name="h_battery">電池</string>
+    <string name="h_how">使い方</string>
+
+    <string name="on">有効</string>
+    <string name="off">無効</string>
+    <string name="watching">見張り中</string>
+    <string name="waiting">休み（画面が消えている間は止めます）</string>
+
+    <string name="st_a11y">アクセシビリティでの有効化: %1$s</string>
+    <string name="st_sensor">加速度センサー: %1$s / %2$s</string>
+    <string name="st_sensor_none">加速度センサーが見つかりません。この端末では背面タップを見分けられません。</string>
+    <string name="st_sensor_unknown">サービスがまだ繋がっていません。下のボタンからアクセシビリティで tapmon を有効にしてください。</string>
+
+    <string name="open_a11y">アクセシビリティ設定を開く</string>
+    <string name="enable">tapmon を有効にする</string>
+
+    <string name="slot_double">2 回タップ</string>
+    <string name="slot_triple">3 回タップ</string>
+    <string name="pick_app">起動するアプリ</string>
+    <string name="assign_note">3 回タップに何か割り当てると、2 回タップの反応は 0.45 秒遅くなります。3 回目が来るのを待たないと、2 回なのか 3 回なのか決められないためです。3 回タップを「なし」にしておくと、2 回目を見つけた瞬間に実行します。</string>
+
+    <string name="act_none">なし</string>
+    <string name="act_back">戻る</string>
+    <string name="act_home">ホーム</string>
+    <string name="act_recents">最近のアプリ</string>
+    <string name="act_notifications">通知パネル</string>
+    <string name="act_quick_settings">クイック設定</string>
+    <string name="act_screenshot">スクリーンショット</string>
+    <string name="act_lock">画面をロック</string>
+    <string name="act_power">電源メニュー</string>
+    <string name="act_play_pause">再生 / 一時停止</string>
+    <string name="act_next">次の曲</string>
+    <string name="act_prev">前の曲</string>
+    <string name="act_torch">ライト</string>
+    <string name="act_app">アプリを起動</string>
+
+    <string-array name="sens_names">
+        <item>とても鈍い</item>
+        <item>鈍い</item>
+        <item>標準</item>
+        <item>敏感</item>
+        <item>とても敏感</item>
+    </string-array>
+
+    <string name="sens_value">%1$s（%2$.1f m/s² 以上の衝撃を叩きと見なす）</string>
+    <string name="live_off">（見張っていない間は測れません）</string>
+    <string name="live_never">まだ</string>
+    <string name="live_ago">%1$d 秒前</string>
+    <string name="live_body">叩きと数えた山: %1$d 回 / 直近の高さ %2$.1f\n弾いた山の高さ: %3$.1f\nいまの揺れ: %4$.1f\nしきい値: %5$.1f\n最後に数えたの: %6$s</string>
+    <string name="sens_note">この画面を開いている間、tapmon は数えるだけで動作はしません。実際に背面を叩いて上の数字を見てください。\n\n叩いても「叩きと数えた山」が増えないなら、感度を上げる（しきい値を下げる）。ポケットに入れたときや机に置いたときに勝手に増えるなら、感度を下げる。「弾いた山の高さ」は、惜しいところで届かなかった衝撃の大きさです。ここがしきい値のすぐ下なら、一段だけ上げれば届きます。</string>
+
+    <string name="guard_noise">歩いているときなど、揺れが続く間は反応しない</string>
+    <string name="guard_note">直近 1.5 秒の揺れの平均が大きい間は、叩きと数えません。歩行や乗り物での誤作動はこれでほとんど止まります。走りながら使いたいときだけ切ってください。\n\nこのほかに、はじめから無視しているものがあります。通話中と呼び出し中は何もしません。画面側を叩いた衝撃や横揺れも、向きが違うので数えません（背面を叩くと端末は画面の側へ押されます）。長く続く力 — 持ち上げる、置く、傾ける — も、叩きにしては長すぎるので捨てます。</string>
+
+    <string name="power_save">省電力で読む（100Hz。2 割ほど取りこぼします）</string>
+    <string name="battery_note">tapmon が電池を使うのは、画面が点いている間だけです。画面が消えたらセンサーを外すので、消えている間の消費はありません。常駐のための通知やフォアグラウンドサービスも持ちません。\n\n画面が点いている間は CPU がもともと起きているため、加速度センサーを足す分の負担は小さく済みます。さらに、センサー側で数十ミリ秒ぶんをまとめてから受け取る設定にして、CPU を起こす回数を減らしています。\n\n省電力を入れると読み取りを 200Hz から 100Hz に落とします。叩いた衝撃は 4ms ほどで頂点に達して 20〜45ms で消えるので、粗く読むとその頂点を踏み外します。実機で記録した波形で試すと、成立した回数は 15 本から 12 本に落ちました。反応が悪くなったと感じたら戻してください。\n\n実際にどれだけ減るかは端末によります。設定 → 電池 → 電池の使用量で tapmon を見れば確かめられます。</string>
+    <string name="vibrate">タップに気づいたら振動する</string>
+
+    <string name="how_body">1. 上の「アクセシビリティ設定を開く」から tapmon を有効にします。ストアを経由せずに入れたアプリは、Android の制限により最初は有効にできません。その場合はアプリ情報の右上メニューから「制限された設定を許可」を選んでから、もう一度お試しください。\n\n2. 「割り当て」で 2 回タップ（と、使うなら 3 回タップ）の動作を決めます。\n\n3. 「感度」の欄を見ながら背面を叩いて、数字が増えることを確かめます。ケースを付けていると衝撃が弱まるので、感度を上げる必要があるかもしれません。\n\n4. この画面を閉じれば、あとは背面を叩くだけです。指の腹ではなく指先で、短く弾くように叩くのがこつです。</string>
+</resources>
