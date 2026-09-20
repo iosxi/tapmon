@@ -17,6 +17,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
@@ -64,8 +65,38 @@ public final class TapmonService extends AccessibilityService
     private TapDetector detector;
     private PowerManager.WakeLock wakeLock;
 
+    /**
+     * 鳴り止んでからも見張りを続ける長さ。叩いて止めたあと、叩いて鳴らし直せるように。
+     *
+     * 鳴っている間しか見張らないと、止めた瞬間に見張りも終わるので鳴らし直せない。
+     */
+    private static final long PLAY_GRACE_MS = 5 * 60 * 1000L;
+
+    /**
+     * 「登録したアプリ」で見張るときの打ち切り。
+     *
+     * 何も起きないまま消灯が続くなら、いつかは CPU を寝かせないと一晩中起きたままになる。
+     * タップを見つけるか音が鳴れば、そこから数え直す。
+     */
+    private static final long APP_CAP_MS = 30 * 60 * 1000L;
+
+    /**
+     * 見張っている間の見直しの間隔。
+     *
+     * 解放を再生状態の通知だけに頼ると握りっぱなしになる。実際になった:
+     * AudioManager#isMusicActive() は鳴り止んだ直後にもまだ true を返すことがあり、
+     * 通知の瞬間に判じると「まだ鳴っている」と読んでしまう。そのあと通知はもう来ない。
+     * 握っている間は自分で見直す。
+     */
+    private static final long RECHECK_MS = 30 * 1000L;
+
     private boolean sensing;
     private boolean playbackWatching;
+    private boolean rechecking;
+
+    private long screenOffAtMs;
+    private long lastAudioAtMs;
+    private volatile long lastTapAtMs;
 
     /**
      * 最後に前面にあったアプリ。画面が消えたあとも、その値が残る。
@@ -113,6 +144,7 @@ public final class TapmonService extends AccessibilityService
         instance = null;
         stopSensing();
         stopPlaybackWatch();
+        setRechecking(false);
         releaseWake();
         Actions.stopTorchWatch(this);
         try {
@@ -160,10 +192,21 @@ public final class TapmonService extends AccessibilityService
             // 画面が点いている間は CPU がもともと起きている。ウェイクロックは要らない。
             wantSensor = true;
         } else {
+            long now = SystemClock.elapsedRealtime();
             int mode = Prefs.screenOffMode(this);
             boolean playing = audio != null && audio.isMusicActive();
-            boolean byPlaying = (mode == Prefs.OFF_PLAYING || mode == Prefs.OFF_BOTH) && playing;
-            boolean byApp = (mode == Prefs.OFF_APPS || mode == Prefs.OFF_BOTH) && appRegistered();
+            if (playing) lastAudioAtMs = now;
+
+            // 鳴っている間と、鳴り止んでからしばらく
+            boolean audioSide = playing
+                    || (lastAudioAtMs > 0 && now - lastAudioAtMs < PLAY_GRACE_MS);
+            // 何も起きないまま時間が経ったら打ち切る
+            long since = Math.max(screenOffAtMs, Math.max(lastAudioAtMs, lastTapAtMs));
+            boolean withinCap = now - since < APP_CAP_MS;
+
+            boolean byPlaying = (mode == Prefs.OFF_PLAYING || mode == Prefs.OFF_BOTH) && audioSide;
+            boolean byApp = (mode == Prefs.OFF_APPS || mode == Prefs.OFF_BOTH)
+                    && appRegistered() && withinCap;
             wantPlaybackWatch = (mode == Prefs.OFF_PLAYING || mode == Prefs.OFF_BOTH);
             wantSensor = (mode == Prefs.OFF_ALWAYS) || byPlaying || byApp;
             wantWake = wantSensor;
@@ -173,7 +216,27 @@ public final class TapmonService extends AccessibilityService
         if (wantSensor) startSensing(); else stopSensing();
         if (!wantWake) releaseWake();
         if (wantPlaybackWatch) startPlaybackWatch(); else stopPlaybackWatch();
+        setRechecking(wantWake);
     }
+
+    /** 握っている間だけ、ときどき自分で見直す。 */
+    private void setRechecking(boolean on) {
+        if (on == rechecking) return;
+        rechecking = on;
+        if (on) {
+            mainHandler.postDelayed(recheck, RECHECK_MS);
+        } else {
+            mainHandler.removeCallbacks(recheck);
+        }
+    }
+
+    private final Runnable recheck = new Runnable() {
+        @Override
+        public void run() {
+            rechecking = false;     // updateWatch に付け直させる
+            updateWatch();
+        }
+    };
 
     /** 最後に前面にあったアプリが、見張る相手として登録されているか。 */
     private boolean appRegistered() {
@@ -291,6 +354,9 @@ public final class TapmonService extends AccessibilityService
     private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context c, Intent i) {
+            if (Intent.ACTION_SCREEN_OFF.equals(i.getAction())) {
+                screenOffAtMs = SystemClock.elapsedRealtime();
+            }
             updateWatch();
         }
     };
@@ -309,6 +375,7 @@ public final class TapmonService extends AccessibilityService
     /** 判定はセンサーの筋で走る。実行は主スレッドに渡す。 */
     @Override
     public void onTaps(final int count) {
+        lastTapAtMs = SystemClock.elapsedRealtime();   // 打ち切りを数え直す
         // 端末ごとの当たり外れを追えるように、気づいたことだけは残す。
         // 山の高さが分かれば、感度をどちらへ動かせばよいか決められる。
         Log.i(Actions.TAG, count + " 回タップ (山の高さ " + detector.lastPeak
