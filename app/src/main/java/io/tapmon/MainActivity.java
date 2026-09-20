@@ -53,6 +53,7 @@ public final class MainActivity extends Activity {
     private Switch saveSwitch;
     private Button screenOffButton;
     private Button watchAppsButton;
+    private TextView watchAppsStatus;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
 
@@ -160,6 +161,11 @@ public final class MainActivity extends Activity {
         watchAppsButton.setOnClickListener(v -> chooseWatchApps());
         addWithTop(root, watchAppsButton, 8);
 
+        watchAppsStatus = new TextView(this);
+        watchAppsStatus.setTextColor(0xFF7FE3B0);
+        watchAppsStatus.setTextSize(13f);
+        addWithTop(root, watchAppsStatus, 6);
+
         addNote(root, R.string.screen_off_note, 8);
 
         // ---- 電池 ----
@@ -241,6 +247,19 @@ public final class MainActivity extends Activity {
         int n = Prefs.watchApps(this).size();
         watchAppsButton.setText(n == 0 ? getString(R.string.pick_watch_apps)
                 : getString(R.string.pick_watch_apps_n, n));
+
+        // 「起動したのを見たか」は目に見えないと直しようがないので、そのまま出す
+        watchAppsStatus.setVisibility(needApps ? View.VISIBLE : View.GONE);
+        if (needApps) {
+            String seen = svc == null ? null : svc.lastSeenApp();
+            if (seen == null) {
+                watchAppsStatus.setText(R.string.seen_none);
+            } else {
+                String label = appLabel(seen + "/x");
+                watchAppsStatus.setText(getString(R.string.seen_app,
+                        label == null ? seen : label, svc.lastSeenAgoSec()));
+            }
+        }
         sensBar.setProgress(Prefs.sensitivity(this));
         updateSensText();
         updateAssignText();

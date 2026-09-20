@@ -6,6 +6,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.ResolveInfo;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -25,6 +26,7 @@ import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 
 import java.util.List;
+import java.util.HashSet;
 import java.util.Set;
 
 /**
@@ -99,13 +101,27 @@ public final class TapmonService extends AccessibilityService
     private volatile long lastTapAtMs;
 
     /**
-     * 最後に前面にあったアプリ。画面が消えたあとも、その値が残る。
+     * 登録したアプリのうち、前面に出すのを見たもの。
      *
-     * 「登録したアプリを使っていたとき」を判じるのに要る。取るのはパッケージ名だけで、
-     * 画面の中身は読まない（そもそも canRetrieveWindowContent=false で読めない）。
-     * この受け取り自体、アプリを登録したときにだけ動的に有効にする。
+     * 本当は「そのアプリのインスタンスが生きているか」を見たいが、**アプリの立場からは
+     * 他のアプリが生きているかを知る道が Android に無い**。実機で確かめた:
+     *
+     *   getRunningAppProcesses()          → 件数=1、自分 (io.tapmon) だけ
+     *   getRunningTasks(5)                → 空
+     *   getActiveSessions()               → SecurityException: Missing permission to control media
+     *
+     * そこで「起動したのを見た」を覚えておく形にした。ホーム画面に戻っただけでは
+     * 忘れない（ホームは「別のアプリに移った」ではないため）。覚えているのは
+     * パッケージ名だけで、画面の中身は読まない。サービスが繋ぎ直されると忘れる。
      */
-    private volatile String lastForegroundPkg;
+    private final Set<String> seenApps = new HashSet<>();
+
+    /** 最後に前面に出すのを見た、登録済みのアプリ（設定画面に見せるため）。 */
+    private volatile String lastSeenApp;
+    private volatile long lastSeenAtMs;
+
+    /** ホーム画面のパッケージ。前面アプリとしては数えない。 */
+    private final Set<String> homePackages = new HashSet<>();
 
     @Override
     protected void onServiceConnected() {
@@ -133,6 +149,7 @@ public final class TapmonService extends AccessibilityService
         // RECEIVER_EXPORTED / NOT_EXPORTED の指定は要らない。
         registerReceiver(screenReceiver, f);
 
+        findHomePackages();
         instance = this;
         reload();      // 中で updateWatch() まで行く
         Log.i(Actions.TAG, "見張りを始めました (センサー: "
@@ -238,11 +255,45 @@ public final class TapmonService extends AccessibilityService
         }
     };
 
-    /** 最後に前面にあったアプリが、見張る相手として登録されているか。 */
+    /** 登録したアプリを、この起動中に前面で見たか。 */
     private boolean appRegistered() {
-        String pkg = lastForegroundPkg;
-        if (pkg == null) return false;
-        return Prefs.watchApps(this).contains(pkg);
+        if (seenApps.isEmpty()) return false;
+        Set<String> want = Prefs.watchApps(this);
+        for (String pkg : seenApps) {
+            if (want.contains(pkg)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * ホーム画面のパッケージを控えておく。
+     *
+     * ホームに戻るのは「別のアプリに移った」ではない。ここを数えてしまうと、
+     * 音楽アプリを開いてホームに戻っただけで「使っていない」ことになる。
+     */
+    private void findHomePackages() {
+        Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME);
+        try {
+            android.content.pm.PackageManager pm = getPackageManager();
+            // まず既定のホームだけを見る。CATEGORY_HOME を拾える限り拾うと、
+            // ロック前の代替ホームである設定アプリまで「ホーム」に数えてしまう
+            // （実機で com.android.settings が出た）。それだと設定アプリを
+            // 見張る相手に登録できなくなる。
+            ResolveInfo def = pm.resolveActivity(home,
+                    android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
+            if (def != null && def.activityInfo != null
+                    && !"android".equals(def.activityInfo.packageName)) {
+                homePackages.add(def.activityInfo.packageName);
+            } else {
+                // 既定が決まっていない端末では、候補をすべてホームとして扱う
+                for (ResolveInfo r : pm.queryIntentActivities(home, 0)) {
+                    if (r.activityInfo != null) homePackages.add(r.activityInfo.packageName);
+                }
+            }
+        } catch (RuntimeException e) {
+            Log.w(Actions.TAG, "ホーム画面を調べられませんでした: " + e);
+        }
+        Log.i(Actions.TAG, "ホーム画面として数えないもの: " + homePackages);
     }
 
     /**
@@ -440,6 +491,15 @@ public final class TapmonService extends AccessibilityService
         return detector;
     }
 
+    /** 設定画面に見せる: 最後に前面で見た登録アプリと、その何秒前か。-1 はまだ見ていない。 */
+    String lastSeenApp() {
+        return lastSeenApp;
+    }
+
+    long lastSeenAgoSec() {
+        return lastSeenAtMs == 0 ? -1 : (SystemClock.elapsedRealtime() - lastSeenAtMs) / 1000L;
+    }
+
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         // 届くのは「登録したアプリ」を使うときだけ。しかも見るのはパッケージ名だけ。
@@ -449,9 +509,15 @@ public final class TapmonService extends AccessibilityService
         CharSequence pkg = event.getPackageName();
         if (pkg == null || pkg.length() == 0) return;
         String name = pkg.toString();
-        // 自分自身と、通知パネルなどのシステムの窓では前面アプリを塗り替えない
+        // 自分自身、通知パネルなどのシステムの窓、ホーム画面は数えない
         if (name.equals(getPackageName()) || name.startsWith("com.android.systemui")) return;
-        lastForegroundPkg = name;
+        if (homePackages.contains(name)) return;
+        if (!Prefs.watchApps(this).contains(name)) return;   // 登録したもの以外は覚えない
+        if (seenApps.add(name)) {
+            Log.i(Actions.TAG, "登録したアプリを前面で見ました: " + name);
+        }
+        lastSeenApp = name;
+        lastSeenAtMs = SystemClock.elapsedRealtime();
     }
 
     @Override

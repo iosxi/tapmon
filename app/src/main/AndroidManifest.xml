@@ -42,6 +42,11 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- ホーム画面を見分けるため。ホームに戻るのは「別のアプリに移った」ではない -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
     </queries>
 
     <!-- 加速度センサーの無い端末には配らない (Play 以外で配る分には目安) -->
