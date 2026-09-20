@@ -25,8 +25,10 @@ import android.widget.TextView;
 import java.text.Collator;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 設定と調整の画面。
@@ -49,6 +51,8 @@ public final class MainActivity extends Activity {
     private Switch vibrateSwitch;
     private Switch gateSwitch;
     private Switch saveSwitch;
+    private Button screenOffButton;
+    private Button watchAppsButton;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
 
@@ -146,6 +150,18 @@ public final class MainActivity extends Activity {
         });
         addNote(root, R.string.guard_note, 4);
 
+        // ---- 画面が消えている間 ----
+        addHeading(root, R.string.h_screen_off, 28);
+        screenOffButton = new Button(this);
+        screenOffButton.setOnClickListener(v -> chooseScreenOffMode());
+        addWithTop(root, screenOffButton, 4);
+
+        watchAppsButton = new Button(this);
+        watchAppsButton.setOnClickListener(v -> chooseWatchApps());
+        addWithTop(root, watchAppsButton, 8);
+
+        addNote(root, R.string.screen_off_note, 8);
+
         // ---- 電池 ----
         addHeading(root, R.string.h_battery, 28);
         saveSwitch = addSwitch(root, R.string.power_save, 4);
@@ -215,6 +231,16 @@ public final class MainActivity extends Activity {
         vibrateSwitch.setChecked(Prefs.vibrate(this));
         gateSwitch.setChecked(Prefs.noiseGate(this));
         saveSwitch.setChecked(Prefs.powerSave(this));
+        int offMode = Prefs.screenOffMode(this);
+        screenOffButton.setText(getResources()
+                .getStringArray(R.array.screen_off_modes)[offMode]);
+        // アプリを見ない設定なら、登録の出番はない
+        boolean needApps = offMode == Prefs.OFF_APPS || offMode == Prefs.OFF_BOTH;
+        watchAppsButton.setEnabled(needApps);
+        watchAppsButton.setAlpha(needApps ? 1f : 0.4f);
+        int n = Prefs.watchApps(this).size();
+        watchAppsButton.setText(n == 0 ? getString(R.string.pick_watch_apps)
+                : getString(R.string.pick_watch_apps_n, n));
         sensBar.setProgress(Prefs.sensitivity(this));
         updateSensText();
         updateAssignText();
@@ -361,6 +387,58 @@ public final class MainActivity extends Activity {
         } catch (PackageManager.NameNotFoundException e) {
             return null;    // 消されたアプリ
         }
+    }
+
+    // ---- 画面が消えている間 ----
+
+    private void chooseScreenOffMode() {
+        String[] names = getResources().getStringArray(R.array.screen_off_modes);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.h_screen_off)
+                .setSingleChoiceItems(names, Prefs.screenOffMode(this), (dlg, which) -> {
+                    dlg.dismiss();
+                    Prefs.setScreenOffMode(this, which);
+                    apply();
+                    // アプリを見る設定にしたのに一つも登録が無いなら、そのまま選ばせる
+                    if ((which == Prefs.OFF_APPS || which == Prefs.OFF_BOTH)
+                            && Prefs.watchApps(this).isEmpty()) {
+                        chooseWatchApps();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /** 消灯中も見張る相手を選ぶ。パッケージごとに一つだけ並べる。 */
+    private void chooseWatchApps() {
+        final List<ResolveInfo> apps = launchableApps();
+        final List<String> pkgs = new ArrayList<>();
+        final List<String> names = new ArrayList<>();
+        PackageManager pm = getPackageManager();
+        for (ResolveInfo r : apps) {
+            String pkg = r.activityInfo.packageName;
+            if (pkgs.contains(pkg)) continue;
+            pkgs.add(pkg);
+            names.add(r.loadLabel(pm).toString());
+        }
+        final Set<String> chosen = Prefs.watchApps(this);
+        final boolean[] checked = new boolean[pkgs.size()];
+        for (int i = 0; i < pkgs.size(); i++) checked[i] = chosen.contains(pkgs.get(i));
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.pick_watch_apps)
+                .setMultiChoiceItems(names.toArray(new String[0]), checked,
+                        (dlg, which, isChecked) -> checked[which] = isChecked)
+                .setPositiveButton(android.R.string.ok, (dlg, w) -> {
+                    Set<String> next = new HashSet<>();
+                    for (int i = 0; i < pkgs.size(); i++) {
+                        if (checked[i]) next.add(pkgs.get(i));
+                    }
+                    Prefs.setWatchApps(this, next);
+                    apply();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
     // ---- アクセシビリティ設定 ----

@@ -22,6 +22,16 @@
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <!--
+      WAKE_LOCK は「画面が消えている間も見張る」を入れたときだけ使う。既定は切ってある。
+      この端末 (Xperia XQ-FS44) のセンサー一覧を見ると、加速度計は non-wakeup しかない。
+      起床できるのは significant_motion / pick_up_gesture / motion_detect のような
+      「大きな動き」を見るものばかりで、数十ミリ秒の叩きは見分けられない。
+      つまり画面が消えている間に叩きを拾うには、CPU を寝かせないより他にない。
+      保護レベルは normal で、許可を尋ねるダイアログは出ない。
+    -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!--
       「アプリを起動」に割り当てるアプリを一覧して選ぶために要る宣言。
       Android 11 以降、他のアプリは既定では見えない。ここで見える範囲を
       「ホーム画面に並ぶアプリ (MAIN/LAUNCHER)」だけに絞っている。

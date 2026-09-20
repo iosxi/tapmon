@@ -1,6 +1,7 @@
 package io.tapmon;
 
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -10,6 +11,7 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.media.AudioManager;
+import android.media.AudioPlaybackConfiguration;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -21,6 +23,9 @@ import android.os.VibratorManager;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 
+import java.util.List;
+import java.util.Set;
+
 /**
  * 背面タップを見張る本体。
  *
@@ -29,6 +34,7 @@ import android.view.accessibility.AccessibilityEvent;
  *   1. 画面が消えている間はセンサーを外す。これが一番効く。
  *      逆に画面が点いている間は CPU がもともと起きているので、加速度計を足す分の
  *      負担は小さい。消えている間の tapmon の消費はゼロ（常駐はしているが何もしない）。
+ *      設定で消灯中も見張れるが、そこだけは電池を使う（下の「画面が消えている間」を見よ）。
  *   2. まとめ配送 (maxReportLatencyUs) を使う。センサー側で数十ミリ秒ぶんを溜めてから
  *      渡してもらえば、CPU を起こす回数がその分だけ減る。溜めても 1 サンプルごとの
  *      時刻は保たれるので、判定は鈍らない。対応していない端末では黙って無視される。
@@ -56,8 +62,19 @@ public final class TapmonService extends AccessibilityService
     private Handler mainHandler;
     private AudioManager audio;
     private TapDetector detector;
+    private PowerManager.WakeLock wakeLock;
 
     private boolean sensing;
+    private boolean playbackWatching;
+
+    /**
+     * 最後に前面にあったアプリ。画面が消えたあとも、その値が残る。
+     *
+     * 「登録したアプリを使っていたとき」を判じるのに要る。取るのはパッケージ名だけで、
+     * 画面の中身は読まない（そもそも canRetrieveWindowContent=false で読めない）。
+     * この受け取り自体、アプリを登録したときにだけ動的に有効にする。
+     */
+    private volatile String lastForegroundPkg;
 
     @Override
     protected void onServiceConnected() {
@@ -67,6 +84,11 @@ public final class TapmonService extends AccessibilityService
                 : sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
         audio = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         mainHandler = new Handler(Looper.getMainLooper());
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (pm != null) {
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "tapmon:screen-off");
+            wakeLock.setReferenceCounted(false);   // 握り損ね・離し損ねを作らない
+        }
 
         thread = new HandlerThread("tapmon-sensor");
         thread.start();
@@ -81,7 +103,7 @@ public final class TapmonService extends AccessibilityService
         registerReceiver(screenReceiver, f);
 
         instance = this;
-        reload();
+        reload();      // 中で updateWatch() まで行く
         Log.i(Actions.TAG, "見張りを始めました (センサー: "
                 + (accelerometer == null ? "なし" : accelerometer.getName()) + ")");
     }
@@ -90,6 +112,8 @@ public final class TapmonService extends AccessibilityService
     public boolean onUnbind(Intent intent) {
         instance = null;
         stopSensing();
+        stopPlaybackWatch();
+        releaseWake();
         Actions.stopTorchWatch(this);
         try {
             unregisterReceiver(screenReceiver);
@@ -116,9 +140,120 @@ public final class TapmonService extends AccessibilityService
             Actions.stopTorchWatch(this);
         }
 
+        applyEventTypes();
         stopSensing();          // 読み取り間隔が変わっているかもしれないので付け直す
-        if (screenOn()) startSensing();
+        updateWatch();
     }
+
+    /**
+     * いま見張るべきか、CPU を起こしておくべきかを、ここ一箇所で決める。
+     * 画面の開閉・設定の変更・再生の開始終了、どの入口から来てもここに集まる。
+     */
+    private void updateWatch() {
+        boolean wantSensor;
+        boolean wantWake = false;
+        boolean wantPlaybackWatch = false;
+
+        if (!Prefs.enabled(this)) {
+            wantSensor = false;
+        } else if (screenOn()) {
+            // 画面が点いている間は CPU がもともと起きている。ウェイクロックは要らない。
+            wantSensor = true;
+        } else {
+            int mode = Prefs.screenOffMode(this);
+            boolean playing = audio != null && audio.isMusicActive();
+            boolean byPlaying = (mode == Prefs.OFF_PLAYING || mode == Prefs.OFF_BOTH) && playing;
+            boolean byApp = (mode == Prefs.OFF_APPS || mode == Prefs.OFF_BOTH) && appRegistered();
+            wantPlaybackWatch = (mode == Prefs.OFF_PLAYING || mode == Prefs.OFF_BOTH);
+            wantSensor = (mode == Prefs.OFF_ALWAYS) || byPlaying || byApp;
+            wantWake = wantSensor;
+        }
+
+        if (wantWake) acquireWake();
+        if (wantSensor) startSensing(); else stopSensing();
+        if (!wantWake) releaseWake();
+        if (wantPlaybackWatch) startPlaybackWatch(); else stopPlaybackWatch();
+    }
+
+    /** 最後に前面にあったアプリが、見張る相手として登録されているか。 */
+    private boolean appRegistered() {
+        String pkg = lastForegroundPkg;
+        if (pkg == null) return false;
+        return Prefs.watchApps(this).contains(pkg);
+    }
+
+    /**
+     * 前面アプリの受け取りを、要るときだけ開ける。
+     *
+     * 「登録したアプリ」を使わない限り、tapmon は画面上のイベントを一つも受け取らない。
+     * 使うときだけ typeWindowStateChanged を開ける。開けても届くのはどの窓が前に来たか
+     * だけで、画面の中身は読まない。
+     */
+    private void applyEventTypes() {
+        AccessibilityServiceInfo info = getServiceInfo();
+        if (info == null) return;
+        int mode = Prefs.screenOffMode(this);
+        int want = (mode == Prefs.OFF_APPS || mode == Prefs.OFF_BOTH)
+                ? AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED : 0;
+        if (info.eventTypes == want) return;
+        info.eventTypes = want;
+        try {
+            setServiceInfo(info);
+        } catch (RuntimeException e) {
+            Log.w(Actions.TAG, "受け取るイベントを変えられませんでした: " + e);
+        }
+    }
+
+    // ---- 画面が消えている間 ----
+
+    /**
+     * CPU を寝かせない。
+     *
+     * この端末の加速度計には起床できる版が無い（dumpsys sensorservice で確認）。
+     * 起床できるのは significant_motion や pick_up_gesture のような「大きな動き」を
+     * 見るものばかりで、数十ミリ秒の叩きは見分けられない。だから画面が消えている間に
+     * 叩きを拾うには、CPU を起こしたままにするより他にない。電池を使う道なので、
+     * 既定では握らないし、握るのも「音が鳴っている間だけ」に絞ってある。
+     */
+    private void acquireWake() {
+        if (wakeLock == null || wakeLock.isHeld()) return;
+        wakeLock.acquire();
+        Log.i(Actions.TAG, "画面消灯中の見張りを始めました (CPU を起こしたままにします)");
+    }
+
+    private void releaseWake() {
+        if (wakeLock == null || !wakeLock.isHeld()) return;
+        wakeLock.release();
+        Log.i(Actions.TAG, "画面消灯中の見張りを終えました");
+    }
+
+    /** 鳴り始め・鳴り終わりを教えてもらう。権限は要らない。 */
+    private void startPlaybackWatch() {
+        if (playbackWatching || audio == null) return;
+        try {
+            audio.registerAudioPlaybackCallback(playbackCallback, mainHandler);
+            playbackWatching = true;
+        } catch (RuntimeException e) {
+            Log.w(Actions.TAG, "再生の見張りを始められませんでした: " + e);
+        }
+    }
+
+    private void stopPlaybackWatch() {
+        if (!playbackWatching || audio == null) return;
+        try {
+            audio.unregisterAudioPlaybackCallback(playbackCallback);
+        } catch (RuntimeException ignored) {
+        }
+        playbackWatching = false;
+    }
+
+    private final AudioManager.AudioPlaybackCallback playbackCallback =
+            new AudioManager.AudioPlaybackCallback() {
+                @Override
+                public void onPlaybackConfigChanged(List<AudioPlaybackConfiguration> configs) {
+                    updateWatch();
+                }
+            };
 
     // ---- センサーの開け閉め ----
 
@@ -129,7 +264,6 @@ public final class TapmonService extends AccessibilityService
 
     private void startSensing() {
         if (sensing || accelerometer == null || sensors == null) return;
-        if (!Prefs.enabled(this)) return;
 
         // 200Hz を超えると HIGH_SAMPLING_RATE_SENSORS 権限が要る (Android 12 以降)。
         // tapmon はちょうど 200Hz までで止める。省電力では 100Hz。
@@ -157,11 +291,7 @@ public final class TapmonService extends AccessibilityService
     private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context c, Intent i) {
-            if (Intent.ACTION_SCREEN_ON.equals(i.getAction())) {
-                startSensing();
-            } else {
-                stopSensing();
-            }
+            updateWatch();
         }
     };
 
@@ -245,7 +375,16 @@ public final class TapmonService extends AccessibilityService
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // 画面の中身は受け取らない設定にしてある（res/xml/accessibility_service.xml）。
+        // 届くのは「登録したアプリ」を使うときだけ。しかも見るのはパッケージ名だけ。
+        if (event == null || event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            return;
+        }
+        CharSequence pkg = event.getPackageName();
+        if (pkg == null || pkg.length() == 0) return;
+        String name = pkg.toString();
+        // 自分自身と、通知パネルなどのシステムの窓では前面アプリを塗り替えない
+        if (name.equals(getPackageName()) || name.startsWith("com.android.systemui")) return;
+        lastForegroundPkg = name;
     }
 
     @Override

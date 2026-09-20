@@ -4,8 +4,8 @@
 「背面タップ」や iPhone の「背面タップ」を、加速度センサーだけで他の端末に持ってくる。
 
 - Android 9 (API 28) 以降。試したのは Xperia XQ-FS44 / Android 16
-- 要求する権限は `VIBRATE` ひとつだけ
-- 外部ライブラリなし。APK は **37 KB**
+- 要求する権限は `VIBRATE` と `WAKE_LOCK` の二つだけ（どちらも normal、ダイアログは出ない）
+- 外部ライブラリなし。APK は **45 KB**
 - 常駐するが、電池を使うのは**画面が点いている間だけ**
 
 ```
@@ -123,7 +123,11 @@ if (tNs - lastCommitNs < REFRACTORY_NS) return;   // 引き算が桁あふれし
 $ aapt2 dump permissions tapmon.apk
 package: io.tapmon
 uses-permission: name='android.permission.VIBRATE'
+uses-permission: name='android.permission.WAKE_LOCK'
 ```
+
+`WAKE_LOCK` は「画面が消えている間も見張る」ためだけに使う（[画面が消えている間](#画面が消えている間)）。
+既定では音が鳴っている間しか握らない。設定を切れば一度も握らない。
 
 `VIBRATE` は叩きに気づいた合図に使う。保護レベルは normal で、インストール時に
 自動で付き、許可を尋ねるダイアログも出ない。できることは振動だけで、そこから
@@ -141,6 +145,7 @@ uses-permission: name='android.permission.VIBRATE'
 | ライト | `CameraManager#setTorchMode` | 不要（`CAMERA` は要らない） |
 | アプリを起動 | `<queries>` で MAIN/LAUNCHER だけ見る | `QUERY_ALL_PACKAGES` は要求しない |
 | 常駐 | アクセシビリティサービス | 前面サービスも通知も不要 |
+| 画面消灯中の見張り | `PARTIAL_WAKE_LOCK` | `WAKE_LOCK`（normal。使うのは設定を入れたときだけ） |
 
 インターネットも位置情報もストレージも通知も使わない。
 
@@ -148,11 +153,16 @@ uses-permission: name='android.permission.VIBRATE'
 
 | 設定 | 値 | 意味 |
 |---|---|---|
-| `accessibilityEventTypes` | 指定なし | 画面上のイベントを一切受け取らない |
+| `accessibilityEventTypes` | 指定なし | 画面上のイベントを一切受け取らない（※） |
 | `canRetrieveWindowContent` | `false` | 画面の内容を読まない |
 | `canRequestFilterKeyEvents` | 指定なし | キーも横取りしない |
 
 tapmon がシステムに頼むのは `performGlobalAction` を実行させてもらうことだけ。
+
+※ ただし「登録したアプリを使っていたとき」を選んだときだけは、`setServiceInfo` で
+`typeWindowStateChanged` を動的に開ける。届くのは「どの窓が前に来たか」で、見るのは
+パッケージ名だけ。`canRetrieveWindowContent=false` は変えないので、画面の内容は
+そもそも読めない。登録を空に戻せば受け取りも止まる。
 
 ## なぜアクセシビリティサービスなのか
 
@@ -182,11 +192,83 @@ tapmon がシステムに頼むのは `performGlobalAction` を実行させて�
    起こす回数を約 1/10 に減らす。溜めても 1 サンプルごとの時刻は保たれるので判定は鈍らない。
    FIFO の無い端末では黙って無視される。
 4. **判定は専用スレッド**で走らせ、UI スレッドを毎秒何十回も起こさない。
-5. **外部ライブラリを読まない。** 起動時に広げる dex が小さいほど速くて軽い（37 KB）。
+5. **外部ライブラリを読まない。** 起動時に広げる dex が小さいほど速くて軽い（45 KB）。
 
 **実際に何 % 減るかは測っていない。** 端末とセンサーハブの作りで変わる。
 設定 → 電池 → 電池の使用量で tapmon を見れば確かめられる。減りが気になるなら、
 省電力（100Hz）に落とすか、使わない間は設定画面のスイッチで切る。
+
+## 画面が消えている間
+
+画面が消えている間も背面タップを拾いたい（音楽を止める、など）場合、この端末では
+**CPU を寝かせない**より他に道がない。センサーの一覧を見ればそれが分かる。
+
+```
+0x0000000b) lsm6dso Accelerometer Non-wakeup      ← 加速度計はこれだけ。起床できる版がない
+0x000000ac) sns_smd Wakeup  (significant_motion)  ← 起床できるのは「大きな動き」系だけ
+0x000000fc) pickup_gated Wakeup (pick_up_gesture)
+0x0000012e) motion_detect_wakeup
+```
+
+起床できるセンサーはどれも「歩き出した」「持ち上げた」を数秒の尺度で見るもので、
+数十ミリ秒の叩きは見分けられない。加速度計に起床できる版があれば、センサー側で
+溜めておいて CPU を起こしてもらえるのだが、それが無い。
+
+そこで、**どういうときに見張るか**を選べるようにしてある。
+
+| 選択肢 | 何が起きるか | 電池 |
+|---|---|---|
+| しない | 画面が消えたらセンサーを外す | 消灯中の消費はゼロ |
+| **音が鳴っている間だけ**（既定） | 鳴っている間だけ CPU を起こす | 安い（下記） |
+| 登録したアプリを使っていたとき | 画面を消す直前に前面だったアプリが登録済みなら見張る | そのアプリのときだけ |
+| その両方 | どちらかに当てはまれば見張る | |
+| ずっと | 消灯中ずっと CPU が起きたまま | 高い |
+
+### 音が鳴っている間だけ
+
+そこが一番安い場所だから既定にしてある。音を鳴らしている間は音声処理のために CPU が
+起きていることが多く、そこに加速度計を足す負担は小さい（ただし DSP に流し込む
+再生の仕方をしている端末では、CPU が寝られるはずのところを起こすことになる）。
+
+鳴り始めと鳴り終わりは `AudioManager#registerAudioPlaybackCallback` で教えてもらう。
+権限は要らない。**止めたあとは音が鳴っていないので、叩いて鳴らし直すことはできない。**
+鳴らし直しもしたいなら、次の「登録したアプリ」か「ずっと」を選ぶ。
+
+### 登録したアプリを使っていたとき
+
+前面にあるアプリは、アクセシビリティの `TYPE_WINDOW_STATE_CHANGED` から
+**パッケージ名だけ**を受け取って覚えておく。追加の権限は要らない
+（`PACKAGE_USAGE_STATS` も `QUERY_ALL_PACKAGES` も要求しない）。
+
+**この受け取りは、アプリを登録したときにだけ動的に開ける。** 使わない限り tapmon は
+画面上のイベントを一つも受け取らない。既定の状態を `dumpsys accessibility` で見ると
+こうなっている。
+
+```
+Service[label=tapmon, feedbackType[FEEDBACK_GENERIC], capabilities=0, eventTypes=, …]
+                                                      ↑ 何も持たない   ↑ 何も受け取らない
+```
+
+判じ方は単純で、**画面を消す直前に前面だったアプリが登録済みかどうか**だけを見る。
+音楽アプリを開いて画面を消す、という流れならこれで足りる。別のアプリに切り替えてから
+画面を消した場合は見張らない。
+
+### 消えている画面で効く動作
+
+| 動作 | 消灯中 | 備考 |
+|---|---|---|
+| 再生 / 一時停止・次の曲・前の曲 | 効く | メディアキーはそのまま届く |
+| ライト | 効く | |
+| アプリを起動 | 効く | 先に画面を点ける（`SCREEN_BRIGHT_WAKE_LOCK`、3 秒で自動的に離す）。端末がロックされていればロック画面が出る |
+| 戻る・ホーム・履歴など | 効かない | 画面が点いていないと意味がない |
+
+### 実機で確かめた動き
+
+```
+18:04:42 - accelerometer          ← 画面 OFF・無音 → センサーを外す
+                                  （tapmon のウェイクロックは握っていない）
+18:04:45 + accelerometer          ← 画面 ON で再取得
+```
 
 ## インストール
 
@@ -236,7 +318,7 @@ tapmon がシステムに頼むのは `performGlobalAction` を実行させて�
 ## はじめから無視しているもの
 
 - **通話中・呼び出し中**（`AudioManager#getMode() != MODE_NORMAL`）。事故になる
-- **画面が消えている間**。センサーを外しているので届かない
+- **画面が消えている間**（既定では音が鳴っている間だけ見張る。[上記](#画面が消えている間)）
 - **画面側を叩いた衝撃、横揺れ**。向きが違う（頂点が Z に寄っていること、を条件にしている）
 - **長く続く力**。持ち上げる・置く・傾けるは、叩きにしては長すぎる
 - **揺れが続いている間**（設定で切れる）
@@ -294,9 +376,28 @@ bash tools/testbed/run.sh
 ```
 
 - JDK 17、Android SDK（build-tools と platform は最新のものを自動で選ぶ）
-- 依存ライブラリなし（AndroidX も使わない）。だから APK が 37 KB で済んでいる
+- 依存ライブラリなし（AndroidX も使わない）。だから APK が 45 KB で済んでいる
 - 署名鍵は `keystore/tapmon.jks`（パスワードは `keystore.properties`、有効期間 30 年）。
   **この鍵は捨てないこと。** 失うと同じアプリとして更新できなくなる
+
+## リリース
+
+`app/build.gradle` と `tools/build.sh` の `versionCode` / `versionName` を上げて組み直し、
+`tapmon.apk` を差し替えてから、commit → push → タグ（`v0`, `v1`, … と整数を 1 つずつ）を push する。
+そのあと:
+
+```sh
+bash tools/release.sh v1 "v1: 見出し" notes.md
+```
+
+GitHub Release を作り、`tapmon.apk` を添えるところまでやる。この PC には `gh` が
+入っていないので、GitHub API を直接叩いている。認証は Git が使っているのと同じ
+資格情報（Git Credential Manager）を借りるので、トークンを別に用意しなくてよい。
+取り出したトークンは `curl` の設定ファイルに直接書くだけで、変数にも画面にも出さず、
+終了時にそのファイルごと消す。
+
+タグが GitHub 側に無ければ止まる。タグを push し忘れたまま Release を作ると、
+その場でタグが生えて（コミットとずれて）後始末が面倒になるため。
 
 ## 構成
 
@@ -310,6 +411,7 @@ app/src/main/
     Prefs.java           設定の保存
   res/xml/accessibility_service.xml   受け取るものを最小にした構成
 tools/build.sh           Gradle を使わない組み立て
+tools/release.sh         GitHub Release を作って APK を添える
 tools/testbed/           判定器だけを取り出して波形を流す試験台
   run.sh                 これを叩けば全部走る（端末も Android も要らない）
   android/os/            Handler と SystemClock の偽物

@@ -10,6 +10,7 @@ import android.hardware.camera2.CameraManager;
 import android.media.AudioManager;
 import android.os.Build;
 import android.os.Handler;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.KeyEvent;
@@ -240,10 +241,34 @@ final class Actions {
         }
     }
 
+    /**
+     * 消えている画面を点ける。アプリの起動を消灯中に割り当てたときだけ使う。
+     *
+     * 画面を点ける公開の手段はこれしかない（PowerManager#wakeUp はシステム専用）。
+     * SCREEN_BRIGHT_WAKE_LOCK は API 17 で非推奨になったが、いまも効く。
+     * 持ち続けると画面が消えなくなるので、3 秒で自動的に離れる形で握る。
+     * なお、端末がロックされていればロック画面が出る。そこから先は利用者の手による。
+     */
+    private static void wakeScreen(Context c) {
+        PowerManager pm = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
+        if (pm == null || pm.isInteractive()) return;
+        try {
+            @SuppressWarnings("deprecation")
+            PowerManager.WakeLock wl = pm.newWakeLock(
+                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                    "tapmon:wake");
+            wl.acquire(3000L);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "画面を点けられませんでした: " + e);
+        }
+    }
+
     // ---- アプリの起動 ----
 
     private static void launch(AccessibilityService svc, String arg) {
         if (arg == null || arg.isEmpty()) return;
+        // 画面が消えているときに起動しても見えない。先に画面を点ける。
+        wakeScreen(svc);
         ComponentName cn = ComponentName.unflattenFromString(arg);
         if (cn == null) return;
         Intent i = new Intent(Intent.ACTION_MAIN)

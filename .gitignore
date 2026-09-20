@@ -6,3 +6,7 @@ keystore/
 keystore.properties
 *.iml
 .idea/
+
+# 試験台が組み立てのたびに作るもの
+tools/testbed/out/
+tools/testbed/io/tapmon/TapDetector.java
